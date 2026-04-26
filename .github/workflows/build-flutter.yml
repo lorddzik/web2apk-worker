@@ -94,49 +94,6 @@ jobs:
           cd project
           BUILD_TYPE=$(echo '${{ github.event.inputs.payload }}' | jq -r '.buildType // "release"')
 
-          # 🛠️ Auto-fix Android v1 embedding to v2 embedding
-          echo "🛠️ Checking for Android v1 embedding & old configs..."
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            if grep -q "io.flutter.app.FlutterApplication" "$MANIFEST"; then
-              echo "⚠️ Found v1 embedding in AndroidManifest.xml! Auto-patching..."
-              sed -i 's/android:name="io.flutter.app.FlutterApplication"/android:name="${applicationName}"/g' "$MANIFEST"
-            fi
-            # Remove old splash screen meta-data which sometimes causes issues
-            sed -i '/io.flutter.app.android.SplashScreenUntilFirstFrame/d' "$MANIFEST"
-          fi
-
-          # Fix MainActivity.java or MainActivity.kt
-          find android/app/src/main/java android/app/src/main/kotlin -name "MainActivity.*" -type f 2>/dev/null | while read f; do
-            if grep -q "io.flutter.app.FlutterActivity" "$f"; then
-               echo "⚠️ Found v1 embedding in $f! Auto-patching..."
-               sed -i 's/io.flutter.app.FlutterActivity/io.flutter.embedding.android.FlutterActivity/g' "$f"
-               # Some older files override onCreate, we'll just replace the import and let it be, 
-               # but often the onCreate in v1 calls GeneratedPluginRegistrant which is removed in v2.
-               # To be safe, we will just use flutter create to regenerate the android folder if v1 is detected.
-            fi
-          done
-
-          # Safer v1 to v2 migration: Let flutter recreate the android folder
-          if grep -q "io.flutter.app.FlutterApplication" "$MANIFEST" 2>/dev/null; then
-            echo "⚠️ Recreating android folder to fix v1 embedding properly..."
-            flutter create . || true
-          fi
-
-          # 🛠️ Auto-fix build.gradle for compileSdk 36 (required by newer plugins)
-          BUILD_GRADLE="android/app/build.gradle"
-          if [ -f "$BUILD_GRADLE" ]; then
-             sed -i 's/compileSdkVersion[[:space:]]\+[0-9]\+/compileSdkVersion 36/g' "$BUILD_GRADLE"
-             sed -i 's/compileSdk[[:space:]]\+[0-9]\+/compileSdk 36/g' "$BUILD_GRADLE"
-             echo "✅ Updated compileSdk to 36 in $BUILD_GRADLE"
-          fi
-          BUILD_GRADLE_KTS="android/app/build.gradle.kts"
-          if [ -f "$BUILD_GRADLE_KTS" ]; then
-             sed -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]*/compileSdk = 36/g' "$BUILD_GRADLE_KTS"
-             sed -i 's/compileSdkVersion[[:space:]]*=[[:space:]]*[0-9]*/compileSdk = 36/g' "$BUILD_GRADLE_KTS"
-             echo "✅ Updated compileSdk to 36 in $BUILD_GRADLE_KTS"
-          fi
-
           flutter clean
           flutter pub get
 

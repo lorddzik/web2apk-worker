@@ -16,6 +16,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -26,23 +29,84 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Prepare Project
+      - name: Download & Prepare Project
+        env:
+          PAYLOAD: ${{ github.event.inputs.payload }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          URL=$(echo '${{ github.event.inputs.payload }}' | jq -r '.url')
-          if [ "$URL" != "null" ]; then
-            wget -O project.zip "$URL"
-            unzip project.zip -d project
-            cd project
+          set -e
+
+          # Parse payload
+          ZIP_ASSET_URL=$(echo "$PAYLOAD" | jq -r '.zipAssetUrl // empty')
+          ZIP_RELEASE_TAG=$(echo "$PAYLOAD" | jq -r '.zipReleaseTag // empty')
+          APP_NAME=$(echo "$PAYLOAD" | jq -r '.appName // "My App"')
+          BUILD_TYPE=$(echo "$PAYLOAD" | jq -r '.buildType // "release"')
+
+          echo "📱 App: $APP_NAME"
+          echo "🔨 Build Type: $BUILD_TYPE"
+
+          if [ -n "$ZIP_ASSET_URL" ]; then
+            echo "📦 Downloading ZIP from GitHub Release asset..."
+            curl -L \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/octet-stream" \
+              "$ZIP_ASSET_URL" -o project.zip
+
+            if [ ! -f project.zip ] || [ ! -s project.zip ]; then
+              echo "❌ Failed to download ZIP"
+              exit 1
+            fi
+
+            echo "📂 Extracting project..."
+            mkdir -p project-raw
+            unzip -q project.zip -d project-raw
+
+            # Find the actual project root (handle nested directories)
+            # Look for gradlew or build.gradle to identify Android project root
+            PROJECT_ROOT=$(find project-raw -name "gradlew" -maxdepth 3 | head -1 | xargs dirname 2>/dev/null || echo "")
+
+            if [ -z "$PROJECT_ROOT" ]; then
+              # Fallback: look for build.gradle
+              PROJECT_ROOT=$(find project-raw -name "build.gradle" -maxdepth 3 | head -1 | xargs dirname 2>/dev/null || echo "")
+            fi
+
+            if [ -z "$PROJECT_ROOT" ]; then
+              echo "❌ No gradlew or build.gradle found — this doesn't look like an Android project"
+              echo "Contents of extracted ZIP:"
+              ls -la project-raw/
+              exit 1
+            fi
+
+            echo "✅ Found Android project at: $PROJECT_ROOT"
+            mv "$PROJECT_ROOT" project
+          else
+            echo "❌ No project source provided in payload"
+            echo "Payload: $PAYLOAD"
+            exit 1
           fi
+
+          # Verify project structure
+          echo "📋 Project contents:"
+          ls -la project/
 
       - name: Build APK
         run: |
           cd project
-          chmod +x gradlew
-          ./gradlew assembleRelease
+          BUILD_TYPE=$(echo '${{ github.event.inputs.payload }}' | jq -r '.buildType // "release"')
 
-      - name: Upload Artifact
+          chmod +x gradlew 2>/dev/null || true
+
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            ./gradlew assembleDebug
+          else
+            ./gradlew assembleRelease
+          fi
+
+      - name: Find and Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ github.event.inputs.jobId }}
-          path: project/app/build/outputs/apk/release/app-release.apk
+          path: |
+            project/app/build/outputs/apk/release/*.apk
+            project/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
